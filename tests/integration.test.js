@@ -5,6 +5,7 @@ import { connect } from "../database/index.js";
 import { buildApp } from "../src/app.js";
 import { commerceRepository } from "../database/transactions/commerce.js";
 import { createApi } from '../../client/src/api/client.js';
+import { verifyPassword } from '../src/security.js';
 const url = process.env.TEST_DATABASE_URL;
 const config = {
   secret: "a".repeat(40),
@@ -138,6 +139,46 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
       ),
       a2 = await request("POST", "/addresses", addressData, other.access_token);
     assert.equal(a1.status, 200, JSON.stringify(a1));
+    await t.test('registration persists one hash, rejects duplicate email, and matches login credentials', async () => {
+      const password = 'Test-only-password-123!';
+      const stored = await db('users').where({ id: buyer.user.id }).first();
+      assert.equal(stored.email, 'buyer@example.test');
+      assert.equal(stored.status, 'active');
+      assert.match(stored.password_hash, /^scrypt\$/);
+      assert.notEqual(stored.password_hash, password);
+      assert.equal(await verifyPassword(password, stored.password_hash), true);
+      assert.equal(buyer.user.password_hash, undefined);
+      assert.ok(buyer.access_token && buyer.refresh_token);
+      assert.equal((await request('GET', '/users/me', null, buyer.access_token)).data.id, buyer.user.id);
+
+      const duplicate = await request('POST', '/auth/register', {
+        name: 'Duplicate Buyer', email: 'BUYER@EXAMPLE.TEST', password,
+      });
+      assert.equal(duplicate.status, 409);
+      assert.equal(duplicate.error.code, 'RESOURCE_CONFLICT');
+      assert.equal((await db('users').where({ email: stored.email })).length, 1);
+      const valid = await request('POST', '/auth/login', { email: 'BUYER@EXAMPLE.TEST', password });
+      assert.equal(valid.status, 200);
+      assert.equal(valid.data.user.id, buyer.user.id);
+
+      for (const input of [
+        { email: stored.email, password: 'Wrong-password-123!' },
+        { email: 'unregistered@example.test', password },
+      ]) {
+        const failure = await request('POST', '/auth/login', input);
+        assert.equal(failure.status, 401);
+        assert.equal(failure.error.code, 'INVALID_CREDENTIALS');
+        assert.ok(failure.error.request_id);
+      }
+      for (const path of ['/auth/register', '/auth/login']) {
+        const input = { email: 'validation@example.test', password: 'too-short' };
+        if (path.endsWith('register')) input.name = 'Validation';
+        assert.equal((await request('POST', path, input)).status, 400);
+        input.password = password;
+        input.email = ' buyer@example.test ';
+        assert.equal((await request('POST', path, input)).status, 400);
+      }
+    });
     await t.test(
       "authentication, public role injection, refresh rotation, logout",
       async () => {
