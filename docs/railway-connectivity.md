@@ -37,10 +37,10 @@ API target. The deployed client URL is not the current failure.
   Automatic request logging is disabled. Raw errors, SQL, connection strings,
   request headers/bodies/query parameters and stack traces are not logged by
   this handler; browser errors retain their existing contract.
-- The ignored local `client/.env` still names the old hyphenated server host.
-  It was preserved. Set its `VITE_API_BASE_URL` to the correct public URL when
-  testing against Railway, or `/api/v1` when using the local development proxy.
-  The verified build used process-level public variables to override that file.
+- At the time of this earlier connectivity audit, the ignored local client env
+  used a hyphenated server host. The current URL contract and Railway steps are
+  documented in [API routing](../../docs/api-routing.md); verify the actual
+  Railway domain rather than reusing a host from this historical report.
 
 The loopback default is a proven repository defect and a plausible explanation
 for the observed gateway failure. Railway's active HOST, domain target port,
@@ -59,17 +59,15 @@ and does not match; configure the value without one. CORS is registered before
 origin validation and routes. Allowed-origin application errors retain CORS
 headers. No wildcard, authentication or origin-validation changes were needed.
 
-`ServerApp.jsx` passes `import.meta.env.VITE_API_BASE_URL` to `createApi()`.
-Vite embeds this value at build time. The client removes trailing base slashes
-and appends paths such as `/products?limit=5`; callers do not repeat `/api/v1`.
-The fallback `/api/v1` is suitable for a same-origin reverse proxy or local
-development, not these separately hosted static frontend/backend services.
+`ServerApp.jsx` now passes `import.meta.env.VITE_API_URL` to `createApi()`.
+Vite embeds this value at build time. The client validates an origin-only URL
+and adds `/api/v1` centrally to paths such as `/products?limit=5`.
+An empty development value uses Vite's same-origin proxy.
 Changing a runtime variable alone cannot update an already built bundle.
 
 `API_PROXY_TARGET` is used by both Vite **development and preview** servers;
 it is not strictly development-only. Static production output does not use
-either proxy. The verified absolute production base bypasses them. Existing
-Vite configuration and client source were left unchanged.
+either proxy. The production origin bypasses them.
 
 `DATABASE_URL` → `connect()` → Knex/pg → repositories → route queries.
 The same Knex config supplies the migration CLI. Migration and seed paths are
@@ -113,7 +111,7 @@ Client service (`Wally_Mall-client`), available **during build**:
 
 ```dotenv
 VITE_PROTOTYPE_MODE=false
-VITE_API_BASE_URL=https://wallymall-server-production.up.railway.app/api/v1
+VITE_API_URL=https://<actual-backend-domain>
 ```
 
 No database, token or webhook secrets belong in the client service or VITE_*

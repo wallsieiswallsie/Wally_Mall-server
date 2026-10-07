@@ -25,6 +25,7 @@ import { MockPaymentAdapter } from "./payment.js";
 import * as v from "./validation.js";
 import { mediaService } from "./media.js";
 import { gcsStorage } from "./gcs.js";
+const API_PREFIX = "/api/v1";
 export async function buildApp({
   db,
   config,
@@ -128,7 +129,7 @@ export async function buildApp({
   const route = (method, url, roles, schema, handler) =>
     app.route({
       method,
-      url: `/api/v1${url}`,
+      url: `${API_PREFIX}${url}`,
       config: url.startsWith("/auth/")
         ? { rateLimit: { max: 20, timeWindow: "1 minute" } }
         : {},
@@ -344,7 +345,7 @@ export async function buildApp({
       { parseAs: "buffer" },
       (req, body, done) => done(null, body),
     );
-    scope.post("/api/v1/payments/webhook/mock", async (req) => {
+    scope.post(`${API_PREFIX}/payments/webhook/mock`, async (req) => {
       const event = v.webhookEvent.parse(
         adapter.handleWebhook(req.body, req.headers["x-payment-signature"]),
       );
