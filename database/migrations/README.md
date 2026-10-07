@@ -14,6 +14,7 @@ PostgreSQL + Knex migrations in ESM format.
 8. `008_fulfillment.js`
 9. `009_trust_moderation.js`
 10. `010_finance.js`
+11. `011_category_name_unique.js` — case-insensitive unique category names (non-deleted rows); aborts if existing names collide
 
 The sequence is dependency-aware. Run migrations in ascending order and roll them back in descending order.
 

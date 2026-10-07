@@ -34,10 +34,10 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
     await db.raw("DROP SCHEMA public CASCADE");
     await db.raw("CREATE SCHEMA public");
     const migration = await db.migrate.latest();
-    assert.equal(migration[1].length, 10);
+    assert.equal(migration[1].length, 11);
     assert.equal((await db.migrate.list())[1].length, 0);
     await db.migrate.rollback(undefined, true);
-    assert.equal((await db.migrate.list())[1].length, 10);
+    assert.equal((await db.migrate.list())[1].length, 11);
     await db.migrate.latest();
     app = await buildApp({ db, config });
     const request = async (method, path, body, token) => {
@@ -1024,6 +1024,144 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
       await restored.logout();
       assert.equal(await restored.restore(), null);
       await privileged.logout();
+    });
+    await t.test("category master: RBAC, validation, rename, status and safe delete", async () => {
+      // Separate client address so this subtest has its own rate-limit budget.
+      const request = async (method, path, body, token) => {
+        const response = await app.inject({
+          method,
+          url: `/api/v1${path}`,
+          payload: body,
+          remoteAddress: "198.51.100.7",
+          headers: token ? { authorization: `Bearer ${token}` } : {},
+        });
+        return { status: response.statusCode, ...response.json() };
+      };
+      const register = async (name) => {
+        const r = await request("POST", "/auth/register", {
+          name,
+          email: `${name}@example.test`,
+          password: "Test-only-password-123!",
+        });
+        assert.equal(r.status, 201, JSON.stringify(r));
+        return r.data;
+      };
+      const catAdmin = await register("cat-admin"),
+        catSuper = await register("cat-super"),
+        catBuyer = await register("cat-buyer"),
+        catSeller = await register("cat-seller");
+      await grant(catAdmin, "admin");
+      await grant(catSuper, "super_admin");
+      await grant(catSeller, "seller");
+      const adminToken = catAdmin.access_token,
+        superToken = catSuper.access_token;
+
+      // C. Unauthorized roles are rejected by the server, not only hidden in the UI.
+      for (const token of [catBuyer.access_token, catSeller.access_token]) {
+        assert.equal((await request("GET", "/admin/categories", undefined, token)).status, 403);
+        const denied = await request("POST", "/admin/categories", { name: "Forbidden" }, token);
+        assert.equal(denied.status, 403);
+        assert.equal(denied.error.code, "FORBIDDEN");
+        assert.equal((await request("PATCH", `/admin/categories/${category.id}`, { name: "Hijack" }, token)).status, 403);
+        assert.equal((await request("DELETE", `/admin/categories/${category.id}`, undefined, token)).status, 403);
+      }
+      assert.equal((await request("POST", "/admin/categories", { name: "Anon" })).status, 401);
+      assert.ok(!(await db("categories").whereIn("name", ["Forbidden", "Anon"]).first()));
+
+      // A. Admin creates; whitespace is normalized.
+      const created = await request("POST", "/admin/categories", { name: "  Kuliner   Lokal " }, adminToken);
+      assert.equal(created.status, 201, JSON.stringify(created));
+      assert.equal(created.data.name, "Kuliner Lokal");
+      assert.equal(created.data.slug, "kuliner-lokal");
+      assert.equal(created.data.status, "active");
+      assert.ok((await request("GET", "/categories")).data.some((c) => c.id === created.data.id));
+
+      // E. Validation and case-insensitive duplicates (existing "Fashion").
+      for (const name of ["", "   "])
+        assert.equal((await request("POST", "/admin/categories", { name }, adminToken)).error.code, "VALIDATION_ERROR");
+      assert.equal((await request("POST", "/admin/categories", {}, adminToken)).status, 400);
+      for (const name of ["Fashion", "fashion", " FASHION ", "kuliner lokal"]) {
+        const dup = await request("POST", "/admin/categories", { name }, superToken);
+        assert.equal(dup.status, 409, name);
+        assert.equal(dup.error.code, "CATEGORY_NAME_TAKEN");
+      }
+      assert.equal(
+        (await request("PATCH", `/admin/categories/${created.data.id}`, { name: "FASHION" }, adminToken)).error.code,
+        "CATEGORY_NAME_TAKEN",
+      );
+      assert.equal((await request("PATCH", `/admin/categories/${created.data.id}`, {}, adminToken)).status, 400);
+      await assert.rejects(
+        db("categories").insert({ name: "fashion ", slug: "raw-dup" }),
+        /uq_categories_name_ci/,
+      );
+
+      // B. Super admin renames; the public list returns the latest name and the slug stays stable.
+      const renamed = await request("PATCH", `/admin/categories/${created.data.id}`, { name: "Kuliner & Minuman" }, superToken);
+      assert.equal(renamed.status, 200, JSON.stringify(renamed));
+      assert.equal(renamed.data.name, "Kuliner & Minuman");
+      assert.equal(renamed.data.slug, "kuliner-lokal");
+      assert.equal((await request("GET", "/categories")).data.find((c) => c.id === created.data.id).name, "Kuliner & Minuman");
+      // Case-only rename of the same category is allowed.
+      assert.equal((await request("PATCH", `/admin/categories/${created.data.id}`, { name: "kuliner & minuman" }, adminToken)).status, 200);
+
+      // D. Seller application stores the category ID and is visible with its name.
+      const applied = await request(
+        "POST",
+        "/seller/applications",
+        { proposed_store_name: "Warung Cat", business_description: "Makanan", business_category_id: created.data.id },
+        catBuyer.access_token,
+      );
+      assert.equal(applied.status, 200, JSON.stringify(applied));
+      const mine = await request("GET", "/seller/applications", undefined, catBuyer.access_token);
+      assert.equal(mine.data[0].business_category_id, created.data.id);
+      assert.equal(mine.data[0].business_category_name, "kuliner & minuman");
+      assert.ok(
+        (await request("GET", "/admin/applications", undefined, adminToken)).data.some(
+          (a) => a.id === applied.data.id && a.business_category_name === "kuliner & minuman",
+        ),
+      );
+
+      // Deactivate: hidden from sellers, new applications rejected, still listed for admins.
+      const off = await request("PATCH", `/admin/categories/${created.data.id}`, { status: "inactive" }, adminToken);
+      assert.equal(off.data.status, "inactive");
+      assert.ok(!(await request("GET", "/categories")).data.some((c) => c.id === created.data.id));
+      const rejected = await request(
+        "POST",
+        "/seller/applications",
+        { proposed_store_name: "Late", business_description: "x", business_category_id: created.data.id },
+        catSeller.access_token,
+      );
+      assert.equal(rejected.error.code, "CATEGORY_UNAVAILABLE");
+      const listed = (await request("GET", "/admin/categories", undefined, superToken)).data.find((c) => c.id === created.data.id);
+      assert.equal(listed.status, "inactive");
+      assert.equal(listed.usage_count, 1);
+      // Legacy moderation payload {status, reason} remains valid.
+      assert.equal((await request("PATCH", `/admin/categories/${created.data.id}`, { status: "active", reason: "Reopen" }, adminToken)).data.status, "active");
+      assert.ok(await db("moderation_actions").where({ target_type: "categories", target_id: created.data.id }).first());
+
+      // F. Referenced categories cannot be deleted and related data is untouched.
+      for (const id of [created.data.id, category.id]) {
+        const blocked = await request("DELETE", `/admin/categories/${id}`, undefined, adminToken);
+        assert.equal(blocked.status, 409);
+        assert.equal(blocked.error.code, "CATEGORY_IN_USE");
+      }
+      assert.equal((await db("seller_applications").where({ id: applied.data.id }).first()).business_category_id, created.data.id);
+      assert.equal((await db("stores").where({ id: s1.id }).first()).primary_category_id, category.id);
+      assert.equal((await db("products").where({ id: p1.id }).first()).category_id, category.id);
+      assert.equal((await db("categories").where({ id: category.id }).first()).deleted_at, null);
+
+      // Unreferenced categories are soft-deleted; the name becomes reusable.
+      const temp = await request("POST", "/admin/categories", { name: "Sementara" }, superToken);
+      const removed = await request("DELETE", `/admin/categories/${temp.data.id}`, undefined, superToken);
+      assert.deepEqual(removed.data, { id: temp.data.id, deleted: true });
+      assert.ok((await db("categories").where({ id: temp.data.id }).first()).deleted_at);
+      assert.ok(!(await request("GET", "/admin/categories", undefined, adminToken)).data.some((c) => c.id === temp.data.id));
+      assert.equal((await request("DELETE", `/admin/categories/${temp.data.id}`, undefined, adminToken)).status, 404);
+      assert.equal((await request("PATCH", `/admin/categories/${temp.data.id}`, { name: "Zombie" }, adminToken)).status, 404);
+      const reused = await request("POST", "/admin/categories", { name: "sementara" }, adminToken);
+      assert.equal(reused.status, 201);
+      assert.notEqual(reused.data.slug, "sementara");
+      assert.ok(await db("audit_logs").where({ action: "categories.delete", entity_id: temp.data.id }).first());
     });
     assert.equal((await app.inject("/health")).statusCode, 200);
   } finally {

@@ -32,8 +32,9 @@ Prefix: `/api/v1`. All persistence IDs are UUIDs; prototype slugs are only publi
 | Operational overview | GET /admin/overview; order counts from actual rows |
 | Operational orders/intervention | GET /admin/orders; POST /admin/orders/:id/cancel `{reason}` cancels the entire unpaid checkout and releases stock |
 | Seller verification | GET /admin/applications; POST /admin/applications/:id/review `{approve,reason}` |
-| Operational People/Operations | GET /admin/stores, /admin/products, /admin/categories, /admin/reports |
-| Product/category/store/report action | PATCH /admin/{products,categories,stores,reports}/:id `{status,reason}` |
+| Operational People/Operations | GET /admin/stores, /admin/products, /admin/reports |
+| Product/store/report action | PATCH /admin/{products,stores,reports}/:id `{status,reason}` |
+| Category master (admin/super_admin) | GET /admin/categories (non-deleted, with `usage_count`); POST /admin/categories `{name}` → 201; PATCH /admin/categories/:id `{name?,status?:active|inactive,reason?}`; DELETE /admin/categories/:id soft-deletes only when `usage_count` is 0, otherwise 409 `CATEGORY_IN_USE`. Names are trimmed, whitespace-collapsed and unique case-insensitively (409 `CATEGORY_NAME_TAKEN`). Public GET /categories returns only active categories. |
 | Report/support creation | POST /reports `{target_type,target_id,category,description}`; operational support cases use existing reports |
 | Financial Transactions/Overview | GET /super-admin/transactions, /super-admin/overview |
 | Buyer administration | GET /super-admin/buyers; PATCH /super-admin/buyers/:id `{status,reason}` |

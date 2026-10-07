@@ -11,6 +11,14 @@ export const email = z
   .email()
   .max(254)
   .transform((s) => s.toLowerCase());
+export const categoryName = text(150).transform((s) => s.replace(/\s+/g, " "));
+export const categoryUpdate = z
+  .strictObject({
+    name: categoryName.optional(),
+    status: z.enum(["active", "inactive"]).optional(),
+    reason: reason.optional(),
+  })
+  .refine((v) => v.name !== undefined || v.status !== undefined);
 export const address = z.strictObject({
   label: text(50).optional(),
   recipient_name: text(120),

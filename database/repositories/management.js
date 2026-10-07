@@ -14,21 +14,68 @@ const storeFields = [
   "status",
   "verification_status",
 ];
+const categoryFields = [
+  "id",
+  "parent_id",
+  "slug",
+  "name",
+  "status",
+  "sort_order",
+  "created_at",
+  "updated_at",
+];
+// Every record that points at a category; a referenced category may be deactivated but never deleted.
+const categoryUsage = (alias) => `(
+  (SELECT count(*) FROM products WHERE category_id = ${alias}.id)
+  + (SELECT count(*) FROM stores WHERE primary_category_id = ${alias}.id)
+  + (SELECT count(*) FROM seller_applications WHERE business_category_id = ${alias}.id)
+  + (SELECT count(*) FROM categories WHERE parent_id = ${alias}.id AND deleted_at IS NULL)
+  + (SELECT count(*) FROM platform_fee_rules WHERE scope_type = 'category' AND scope_id = ${alias}.id)
+)::int`;
+const slugify = (name) =>
+  name
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120) || "kategori";
+async function assertCategoryNameFree(t, name, exceptId) {
+  const q = t("categories")
+    .whereNull("deleted_at")
+    .whereRaw("lower(btrim(name)) = lower(btrim(?))", [name]);
+  if (exceptId) q.whereNot({ id: exceptId });
+  ensure(!(await q.first()), "CATEGORY_NAME_TAKEN");
+}
+// The unique index is the race-safe backstop for the pre-check above.
+async function categoryWrite(query) {
+  try {
+    return await query;
+  } catch (e) {
+    ensure(
+      !(e.code === "23505" && e.constraint === "uq_categories_name_ci"),
+      "CATEGORY_NAME_TAKEN",
+    );
+    throw e;
+  }
+}
 export function managementRepository(db) {
   return {
     applications: (userId) =>
-      db("seller_applications")
-        .where({ user_id: userId })
+      db("seller_applications as a")
+        .leftJoin("categories as c", "c.id", "a.business_category_id")
+        .where({ "a.user_id": userId })
         .select(
-          "id",
-          "proposed_store_name",
-          "business_description",
-          "business_category_id",
-          "status",
-          "submitted_at",
-          "rejection_reason",
+          "a.id",
+          "a.proposed_store_name",
+          "a.business_description",
+          "a.business_category_id",
+          "c.name as business_category_name",
+          "a.status",
+          "a.submitted_at",
+          "a.rejection_reason",
         )
-        .orderBy("created_at", "desc"),
+        .orderBy("a.created_at", "desc"),
     async apply(userId, input) {
       return db.transaction(async (t) => {
         await t("users").where({ id: userId }).forUpdate().first();
@@ -40,6 +87,14 @@ export function managementRepository(db) {
           "APPLICATION_ALREADY_OPEN",
         );
         const { documents, ...fields } = input;
+        ensure(
+          await t("categories")
+            .where({ id: fields.business_category_id, status: "active" })
+            .whereNull("deleted_at")
+            .forShare()
+            .first(),
+          "CATEGORY_UNAVAILABLE",
+        );
         const [app] = await t("seller_applications")
           .insert({
             ...fields,
@@ -364,15 +419,20 @@ export function managementRepository(db) {
       });
     },
     async operational(kind) {
+      if (kind === "applications")
+        return db("seller_applications as a")
+          .leftJoin("categories as c", "c.id", "a.business_category_id")
+          .select(
+            "a.id",
+            "a.proposed_store_name",
+            "a.business_description",
+            "a.business_category_id",
+            "c.name as business_category_name",
+            "a.status",
+            "a.submitted_at",
+          )
+          .limit(100);
       const fields = {
-        applications: [
-          "id",
-          "proposed_store_name",
-          "business_description",
-          "business_category_id",
-          "status",
-          "submitted_at",
-        ],
         stores: storeFields,
         products: [
           "id",
@@ -382,7 +442,6 @@ export function managementRepository(db) {
           "status",
           "moderation_status",
         ],
-        categories: ["id", "parent_id", "slug", "name", "status"],
         reports: [
           "id",
           "target_type",
@@ -394,20 +453,120 @@ export function managementRepository(db) {
         ],
       };
       const tables = {
-        applications: "seller_applications",
         stores: "stores",
         products: "products",
-        categories: "categories",
         reports: "reports",
       };
       return db(tables[kind]).select(fields[kind]).limit(100);
+    },
+    categories: () =>
+      db("categories as c")
+        .whereNull("c.deleted_at")
+        .select(categoryFields.map((k) => `c.${k}`))
+        .select(db.raw(`${categoryUsage("c")} AS usage_count`))
+        .orderBy([{ column: "c.sort_order" }, { column: "c.name" }])
+        .limit(500),
+    async createCategory(ctx, input) {
+      return db.transaction(async (t) => {
+        await assertCategoryNameFree(t, input.name);
+        let slug = slugify(input.name);
+        if (await t("categories").where({ slug }).first())
+          slug = `${slug}-${randomUUID().slice(0, 8)}`;
+        const [row] = await categoryWrite(
+          t("categories")
+            .insert({ name: input.name, slug })
+            .returning(categoryFields),
+        );
+        await audit(t, ctx, "categories.create", "categories", row.id, null, null, {
+          name: row.name,
+          status: row.status,
+        });
+        return { ...row, usage_count: 0 };
+      });
+    },
+    async updateCategory(ctx, id, input) {
+      return db.transaction(async (t) => {
+        const before = await t("categories")
+          .where({ id })
+          .whereNull("deleted_at")
+          .forUpdate()
+          .first();
+        ensure(before, "NOT_FOUND", 404);
+        const changes = {};
+        if (input.name !== undefined && input.name !== before.name) {
+          await assertCategoryNameFree(t, input.name, id);
+          changes.name = input.name;
+        }
+        if (input.status !== undefined && input.status !== before.status)
+          changes.status = input.status;
+        if (Object.keys(changes).length) {
+          await categoryWrite(
+            t("categories")
+              .where({ id })
+              .update({ ...changes, updated_at: t.fn.now() }),
+          );
+          const prev = pick(before, Object.keys(changes));
+          if (changes.status && input.reason)
+            await t("moderation_actions").insert({
+              target_type: "categories",
+              target_id: id,
+              action: "review",
+              reason: input.reason,
+              performed_by: ctx.id,
+              previous_state: pick(before, ["status"]),
+              new_state: { status: changes.status },
+            });
+          await audit(
+            t,
+            ctx,
+            "categories.update",
+            "categories",
+            id,
+            input.reason ?? null,
+            prev,
+            changes,
+          );
+        }
+        return t("categories as c")
+          .where("c.id", id)
+          .select(categoryFields.map((k) => `c.${k}`))
+          .select(t.raw(`${categoryUsage("c")} AS usage_count`))
+          .first();
+      });
+    },
+    async deleteCategory(ctx, id) {
+      return db.transaction(async (t) => {
+        const before = await t("categories as c")
+          .where("c.id", id)
+          .whereNull("c.deleted_at")
+          .forUpdate()
+          .select("c.id", "c.name", "c.status")
+          .select(t.raw(`${categoryUsage("c")} AS usage_count`))
+          .first();
+        ensure(before, "NOT_FOUND", 404);
+        ensure(before.usage_count === 0, "CATEGORY_IN_USE");
+        // Soft delete keeps audit history intact; public queries already exclude deleted_at rows.
+        await t("categories")
+          .where({ id })
+          .update({ deleted_at: t.fn.now(), updated_at: t.fn.now() });
+        await audit(
+          t,
+          ctx,
+          "categories.delete",
+          "categories",
+          id,
+          null,
+          pick(before, ["name", "status"]),
+          { deleted: true },
+        );
+        return { id, deleted: true };
+      });
     },
     async moderate(ctx, kind, id, input) {
       return db.transaction(async (t) => {
         const table = {
           products: "products",
           stores: "stores",
-          categories: "categories",
           reports: "reports",
           users: "users",
         }[kind];

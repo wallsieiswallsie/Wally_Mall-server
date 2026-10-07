@@ -477,16 +477,27 @@ export async function buildApp({
     (req, data) => commerce.cancel(ctx(req), req.params.id, data.reason),
   );
   route("GET", "/admin/overview", ops, null, () => management.metrics(false));
-  for (const kind of [
-    "applications",
-    "stores",
-    "products",
-    "categories",
-    "reports",
-  ])
+  for (const kind of ["applications", "stores", "products", "reports"])
     route("GET", `/admin/${kind}`, ops, null, () =>
       management.operational(kind),
     );
+  route("GET", "/admin/categories", ops, null, () => management.categories());
+  route(
+    "POST",
+    "/admin/categories",
+    ops,
+    v.z.strictObject({ name: v.categoryName }),
+    (req, data, reply) => {
+      reply.code(201);
+      return management.createCategory(ctx(req), data);
+    },
+  );
+  route("PATCH", "/admin/categories/:id", ops, v.categoryUpdate, (req, data) =>
+    management.updateCategory(ctx(req), req.params.id, data),
+  );
+  route("DELETE", "/admin/categories/:id", ops, null, (req) =>
+    management.deleteCategory(ctx(req), req.params.id),
+  );
   route(
     "POST",
     "/admin/applications/:id/review",
@@ -497,7 +508,6 @@ export async function buildApp({
   for (const [kind, statuses] of Object.entries({
     products: ["approved", "rejected", "pending"],
     stores: ["active", "suspended", "closed"],
-    categories: ["active", "inactive"],
     reports: ["reviewing", "resolved", "rejected"],
   }))
     route(
