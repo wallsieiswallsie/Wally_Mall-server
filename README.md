@@ -32,7 +32,7 @@ npm.cmd --prefix server run db:status
 npm.cmd --prefix server start
 ```
 
-`GET http://127.0.0.1:3001/health` checks the process. `/ready` checks PostgreSQL connectivity. Startup deliberately refuses production mode with the development payment adapter. TLS termination, a real provider adapter, distributed rate limiting and production deployment configuration remain deployment work.
+`GET http://127.0.0.1:3001/health` checks the process. `/ready` checks PostgreSQL connectivity. Mock payments remain available for deployed testing with `NODE_ENV=production`; no real payment is processed. See the [Railway connectivity audit and deployment runbook](docs/railway-connectivity.md) for binding, build-time client variables, migrations and verification.
 
 Never commit `.env`. Generate each token/signature secret using a cryptographically secure random generator. Set `CORS_ORIGINS` to exact trusted origins; wildcard origins are unsupported. Authorization uses explicit Bearer headers, not automatically attached cookies. Browser integration must keep refresh credentials out of localStorage; a secure BFF/cookie transport would also require CSRF controls. No browser role picker is trusted.
 

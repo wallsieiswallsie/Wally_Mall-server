@@ -29,7 +29,8 @@ export async function buildApp({
   adapter = new MockPaymentAdapter(config.webhook),
 }) {
   const app = Fastify({
-    logger: false,
+    logger: true,
+    disableRequestLogging: true,
     bodyLimit: 262144,
     genReqId: () => randomUUID(),
     trustProxy: false,
@@ -71,6 +72,33 @@ export async function buildApp({
       status = 400;
       code = "INVALID_RESOURCE";
     } else if (status >= 500) code = "INTERNAL_ERROR";
+    if (status >= 500) {
+      // Never log raw errors: database messages can include SQL and credentials.
+      const diagnosticCode =
+        /^(08|22|23|28|40|42|53|54|55|57|58|XX)[A-Z0-9]{3}$/.test(
+          error.code ?? "",
+        ) ||
+        [
+          "ECONNREFUSED",
+          "ECONNRESET",
+          "ETIMEDOUT",
+          "ENOTFOUND",
+          "EAI_AGAIN",
+        ].includes(error.code)
+          ? error.code
+          : error.name === "KnexTimeoutError"
+            ? "DATABASE_TIMEOUT"
+            : "INTERNAL_ERROR";
+      req.log.error(
+        {
+          request_id: req.id,
+          route: req.routeOptions.url,
+          status,
+          error_code: diagnosticCode,
+        },
+        "Request failed",
+      );
+    }
     reply.code(status).send({ error: { code, request_id: req.id } });
   });
   const ctx = (req) => ({
