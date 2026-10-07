@@ -93,14 +93,19 @@ export const product = z.strictObject({
   media: z
     .array(
       z.strictObject({
-        media_type: z.enum(["image", "video"]).default("image"),
-        url: z.url(),
-        thumbnail_url: z.url().optional(),
+        media_asset_id: id,
         alt_text: text(255).optional(),
       }),
     )
     .max(10)
     .default([]),
+});
+export const mediaUpload = z.strictObject({
+  filename: text(255),
+  content_type: text(100),
+  size: z.number().int().positive(),
+  purpose: z.literal("product"),
+  source: z.enum(["device", "google_drive"]).default("device"),
 });
 export const fee = z
   .strictObject({

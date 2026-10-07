@@ -6,6 +6,8 @@ import { buildApp } from "../src/app.js";
 import { commerceRepository } from "../database/transactions/commerce.js";
 import { createApi } from '../../client/src/api/client.js';
 import { verifyPassword } from '../src/security.js';
+import { ensure } from '../src/domain.js';
+import { mediaService } from '../src/media.js';
 const url = process.env.TEST_DATABASE_URL;
 const config = {
   secret: "a".repeat(40),
@@ -34,12 +36,21 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
     await db.raw("DROP SCHEMA public CASCADE");
     await db.raw("CREATE SCHEMA public");
     const migration = await db.migrate.latest();
-    assert.equal(migration[1].length, 11);
+    assert.equal(migration[1].length, 12);
     assert.equal((await db.migrate.list())[1].length, 0);
     await db.migrate.rollback(undefined, true);
-    assert.equal((await db.migrate.list())[1].length, 11);
+    assert.equal((await db.migrate.list())[1].length, 12);
     await db.migrate.latest();
-    app = await buildApp({ db, config });
+    const objects = new Map();
+    const storage = {
+      async createUpload() { return { upload_url: 'https://upload.example.test/?X-Goog-Signature=test', headers: { 'Content-Type': 'image/png' } }; },
+      async verify(asset) {
+        ensure(objects.has(asset.id), 'MEDIA_OBJECT_NOT_FOUND');
+        return '1';
+      },
+      async deleteMedia(asset) { objects.delete(asset.id); },
+    };
+    app = await buildApp({ db, config, storage });
     const request = async (method, path, body, token) => {
       const response = await app.inject({
         method,
@@ -760,6 +771,42 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
     await t.test(
       "seller product creation, price/stock update, role revocation and notifications",
       async () => {
+        const metadata = { filename: '../../unsafe name.png', content_type: 'image/png', size: 100, purpose: 'product' };
+        const start = (body = metadata, token = seller.access_token) => request('POST', '/media/uploads', body, token);
+        assert.equal((await start(metadata, buyer.access_token)).status, 403);
+        assert.equal((await start({ ...metadata, content_type: 'image/svg+xml' })).error.code, 'UNSUPPORTED_MEDIA_TYPE');
+        assert.equal((await start({ ...metadata, size: 5242881 })).error.code, 'MEDIA_TOO_LARGE');
+        const session = await start();
+        assert.equal(session.status, 200, JSON.stringify(session));
+        const assetId = session.data.upload_id;
+        const permanent = session.data.public_url;
+        assert.ok(permanent.startsWith('https://storage.googleapis.com/wallymall-media-prod/'));
+        assert.equal(new URL(permanent).search, '');
+        assert.match(permanent, new RegExp(`/products/${seller.user.id}/[0-9a-f-]{36}\\.png$`));
+        assert.equal((await request('POST', `/media/uploads/${assetId}/complete`, null, seller.access_token)).error.code, 'MEDIA_OBJECT_NOT_FOUND');
+        assert.equal((await db('media_assets').where({ id: assetId }).first()).status, 'pending');
+        objects.set(assetId, true);
+        assert.equal((await request('POST', `/media/uploads/${assetId}/complete`, null, outsider.access_token)).error.code, 'MEDIA_NOT_OWNED');
+        assert.equal((await request('POST', `/media/uploads/${assetId}/complete`, null, seller.access_token)).data.status, 'uploaded');
+        const foreign = await start(metadata, outsider.access_token);
+        objects.set(foreign.data.upload_id, true);
+        await request('POST', `/media/uploads/${foreign.data.upload_id}/complete`, null, outsider.access_token);
+        const baseProduct = { name: 'Media test', description: 'test', category_id: category.id, condition: 'new', variants: [{ name: 'Default', price: '100', on_hand: 1 }] };
+        const create = (media) => request('POST', `/seller/stores/${s1.id}/products`, { ...baseProduct, media }, seller.access_token);
+        assert.equal((await create([{ media_asset_id: foreign.data.upload_id }])).error.code, 'MEDIA_NOT_OWNED');
+        const unfinished = await start();
+        assert.equal((await create([{ media_asset_id: unfinished.data.upload_id }])).error.code, 'MEDIA_UPLOAD_INCOMPLETE');
+        await db('media_assets').where({ id: unfinished.data.upload_id }).update({ expires_at: new Date(Date.now() - 1000) });
+        assert.equal((await request('POST', `/media/uploads/${unfinished.data.upload_id}/complete`, null, seller.access_token)).error.code, 'MEDIA_UPLOAD_EXPIRED');
+        assert.equal((await request('DELETE', `/media/${unfinished.data.upload_id}`, null, outsider.access_token)).error.code, 'MEDIA_NOT_OWNED');
+        assert.equal((await request('DELETE', `/media/${unfinished.data.upload_id}`, null, seller.access_token)).status, 200);
+        assert.equal((await create([{ url: permanent + '?X-Goog-Signature=secret&X-Goog-Expires=900' }])).error.code, 'VALIDATION_ERROR');
+        for (const query of ['?X-Goog-Signature=secret', '?X-Goog-Expires=900']) {
+          await assert.rejects(db('media_assets').where({ id: assetId }).update({ public_url: permanent + query }), { code: '23514' });
+        }
+        objects.delete(assetId);
+        assert.equal((await create([{ media_asset_id: assetId }])).error.code, 'MEDIA_OBJECT_NOT_FOUND');
+        objects.set(assetId, true);
         const created = await request(
           "POST",
           `/seller/stores/${s1.id}/products`,
@@ -769,12 +816,23 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
             category_id: category.id,
             condition: "new",
             variants: [{ name: "Default", price: "50000", on_hand: 3 }],
-            media: [{ url: "https://example.test/bag.png" }],
+            media: [{ media_asset_id: assetId }],
             tags: ["bag", "canvas"],
           },
           seller.access_token,
         );
         assert.equal(created.status, 200, JSON.stringify(created));
+        assert.equal((await db('media_assets').where({ id: assetId }).first()).status, 'attached');
+        assert.equal((await request('DELETE', `/media/${assetId}`, null, seller.access_token)).error.code, 'MEDIA_IN_USE');
+        assert.equal((await create([{ media_asset_id: assetId }])).error.code, 'MEDIA_UPLOAD_INCOMPLETE');
+        await assert.rejects(db('product_media').where({ media_asset_id: assetId }).update({ url: permanent + '?X-Goog-Expires=900' }), { code: '23514' });
+        await db('media_assets').where({ id: foreign.data.upload_id }).update({ expires_at: new Date(Date.now() - 2 * 86400000), updated_at: new Date(Date.now() - 2 * 86400000) });
+        const cleanup = mediaService(db, storage, 'wallymall-media-prod');
+        await cleanup.cleanup();
+        assert.equal(objects.has(foreign.data.upload_id), false);
+        assert.equal(objects.has(assetId), true);
+        assert.ok((await db('media_assets').where({ id: foreign.data.upload_id }).first()).purged_at);
+        assert.equal((await cleanup.cleanup()).purged, 0);
         assert.equal(
           (await request("GET", `/products/by-slug/${created.data.slug}`))
             .status,
@@ -791,6 +849,8 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
           `/products/by-slug/${created.data.slug}`,
         );
         assert.equal(published.status, 200, JSON.stringify(published));
+        assert.equal(published.data.media[0].url, (await db('product_media').where({ media_asset_id: assetId }).first()).url);
+        assert.equal(published.data.media[0].url, permanent);
         assert.deepEqual(published.data.tags.sort(), ["bag", "canvas"]);
         const variant = published.data.variants[0];
         const updated = await request(

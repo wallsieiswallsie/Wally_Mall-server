@@ -59,7 +59,7 @@ async function categoryWrite(query) {
     throw e;
   }
 }
-export function managementRepository(db) {
+export function managementRepository(db, mediaService) {
   return {
     applications: (userId) =>
       db("seller_applications as a")
@@ -304,13 +304,7 @@ export function managementRepository(db) {
               reason: "Initial inventory",
             });
         }
-        for (let i = 0; i < media.length; i++)
-          await t("product_media").insert({
-            ...media[i],
-            product_id: p.id,
-            sort_order: i,
-            is_primary: i === 0,
-          });
+        if (media.length) await mediaService.attach(t, ctx.id, p.id, media);
         for (const name of [
           ...new Set(tags.map((x) => x.toLowerCase().trim())),
         ]) {
@@ -408,13 +402,11 @@ export function managementRepository(db) {
           .min("price as min")
           .max("price as max")
           .first();
-        await t("products")
-          .where({ id: p.id })
-          .update({
-            min_price: prices.min,
-            max_price: prices.max,
-            updated_at: t.fn.now(),
-          });
+        await t("products").where({ id: p.id }).update({
+          min_price: prices.min,
+          max_price: prices.max,
+          updated_at: t.fn.now(),
+        });
         return { id };
       });
     },
@@ -477,10 +469,19 @@ export function managementRepository(db) {
             .insert({ name: input.name, slug })
             .returning(categoryFields),
         );
-        await audit(t, ctx, "categories.create", "categories", row.id, null, null, {
-          name: row.name,
-          status: row.status,
-        });
+        await audit(
+          t,
+          ctx,
+          "categories.create",
+          "categories",
+          row.id,
+          null,
+          null,
+          {
+            name: row.name,
+            status: row.status,
+          },
+        );
         return { ...row, usage_count: 0 };
       });
     },

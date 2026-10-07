@@ -16,6 +16,8 @@ PostgreSQL + Knex migrations in ESM format.
 10. `010_finance.js`
 11. `011_category_name_unique.js` — case-insensitive unique category names (non-deleted rows); aborts if existing names collide
 
+12. `012_media_assets.js` — managed GCS upload metadata and optional product media asset relation; preserves legacy URLs.
+
 The sequence is dependency-aware. Run migrations in ascending order and roll them back in descending order.
 
 ## Coverage

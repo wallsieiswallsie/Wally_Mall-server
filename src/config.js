@@ -9,6 +9,17 @@ export function configFromEnv(env = process.env) {
   }
 
   const provider = env.PAYMENT_PROVIDER ?? "mock";
+  let credentials;
+  if (env.GCP_SERVICE_ACCOUNT_JSON) {
+    try {
+      credentials = JSON.parse(env.GCP_SERVICE_ACCOUNT_JSON);
+      if (!credentials.client_email || !credentials.private_key)
+        throw new Error();
+      credentials.private_key = credentials.private_key.replace(/\\n/g, "\n");
+    } catch {
+      throw new Error("Invalid GCP_SERVICE_ACCOUNT_JSON");
+    }
+  }
 
   for (const key of [
     "BUYER_SERVICE_FEE",
@@ -24,11 +35,13 @@ export function configFromEnv(env = process.env) {
     secret,
     webhook,
     provider,
+    gcs: {
+      bucket: env.GCS_BUCKET || "wallymall-media-prod",
+      projectId: env.GCP_PROJECT_ID || undefined,
+      credentials,
+    },
 
-    origins: (
-      env.CORS_ORIGINS ??
-      "http://localhost:5173,http://127.0.0.1:5173"
-    )
+    origins: (env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173")
       .split(",")
       .map((origin) => origin.trim())
       .filter(Boolean),
