@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID, createHmac } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { connect } from "../database/index.js";
 import { buildApp } from "../src/app.js";
 import { commerceRepository } from "../database/transactions/commerce.js";
@@ -41,6 +42,52 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
     await db.migrate.rollback(undefined, true);
     assert.equal((await db.migrate.list())[1].length, 12);
     await db.migrate.latest();
+    await t.test('012 upgrade, rollback, and missing-baseline repair are atomic', async () => {
+      const name = '20261007121411_012_media_assets.js';
+      // Only 012 is reversed here; never roll back an application database batch.
+      await db.migrate.down({ name });
+      const history = await db('knex_migrations').orderBy('id');
+      assert.equal(history.length, 11);
+      const snapshot = async () => ({
+        columns: (await db.raw(`SELECT column_name, data_type, udt_name,
+          is_nullable, column_default FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'product_media'
+          ORDER BY ordinal_position`)).rows,
+        constraints: (await db.raw(`SELECT conname, pg_get_constraintdef(oid) AS definition
+          FROM pg_constraint WHERE conrelid = 'public.product_media'::regclass
+          ORDER BY conname`)).rows,
+        indexes: (await db.raw(`SELECT indexname, indexdef FROM pg_indexes
+          WHERE schemaname = 'public' AND tablename = 'product_media'
+          ORDER BY indexname`)).rows,
+      });
+      const canonical = await snapshot();
+      // Reproduce the incident only inside this disposable test database.
+      await db.schema.dropTable('product_media');
+      await assert.rejects(db.migrate.latest(), { code: '42P01' });
+      assert.equal(await db.schema.hasTable('media_assets'), false);
+      assert.deepEqual(await db('knex_migrations').orderBy('id'), history);
+      const repair = await readFile(new URL('../database/repairs/restore-product-media.sql', import.meta.url), 'utf8');
+      await db.raw(repair);
+      assert.deepEqual(await snapshot(), canonical);
+      assert.deepEqual(await db('knex_migrations').orderBy('id'), history);
+      assert.deepEqual((await db.migrate.latest())[1], [name]);
+      const upgraded = await snapshot();
+      for (const constraint of ['fk_product_media_product', 'fk_product_media_variant',
+        'fk_product_media_asset', 'uq_product_media_asset', 'chk_product_media_managed_url']) {
+        assert.ok(upgraded.constraints.some(c => c.conname === constraint), constraint);
+      }
+      for (const index of ['idx_product_media_product_id', 'idx_product_media_variant_id', 'uq_product_media_primary']) {
+        assert.ok(upgraded.indexes.some(i => i.indexname === index), index);
+      }
+      assert.ok(upgraded.columns.some(c => c.column_name === 'media_asset_id' && c.udt_name === 'uuid' && c.is_nullable === 'YES'));
+      assert.equal(await db.schema.hasTable('media_assets'), true);
+      await db.migrate.down({ name });
+      assert.deepEqual(await snapshot(), canonical);
+      assert.equal(await db.schema.hasTable('media_assets'), false);
+      await db.migrate.latest();
+      assert.deepEqual(await snapshot(), upgraded);
+      assert.equal((await db.migrate.list())[1].length, 0);
+    });
     const objects = new Map();
     const storage = {
       async createUpload() { return { upload_url: 'https://upload.example.test/?X-Goog-Signature=test', headers: { 'Content-Type': 'image/png' } }; },

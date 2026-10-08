@@ -20,6 +20,11 @@ PostgreSQL + Knex migrations in ESM format.
 
 The sequence is dependency-aware. Run migrations in ascending order and roll them back in descending order.
 
+Applied migrations and their filenames are immutable. Use new migrations for
+deployed schema changes; never remove history records to repair missing baseline
+objects. See the [media consistency audit and guarded repair](../../docs/media-migration-repair.md)
+for this incident's verification, recovery SQL, and migration regression tests.
+
 ## Coverage
 
 The 10 modules cover all 50 tables and all 19 PostgreSQL enum types from the supplied `Wally_Mall.sql` schema.

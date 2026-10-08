@@ -9,9 +9,9 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/index.js",
     "dev": "node --env-file-if-exists=.env --watch src/index.js",
-    "migrate": "knex migrate:latest --knexfile database/knexfile.js",
-    "migrate:status": "knex migrate:status --knexfile database/knexfile.js",
-    "migrate:rollback": "knex migrate:rollback --knexfile database/knexfile.js",
+    "migrate": "npm run db:latest",
+    "migrate:status": "npm run db:status",
+    "migrate:rollback": "npm run db:rollback",
     "db:latest": "node --env-file-if-exists=.env database/cli.js latest",
     "db:status": "node --env-file-if-exists=.env database/cli.js status",
     "db:rollback": "node --env-file-if-exists=.env database/cli.js rollback",
