@@ -255,6 +255,18 @@ export function managementRepository(db, mediaService) {
         .orderBy("created_at", "desc")
         .limit(100);
     },
+    async product(userId, id) {
+      const product = await db("products").where({ id }).whereNull("deleted_at")
+        .first("id", "store_id", "name", "status", "moderation_status", "min_price", "max_price");
+      ensure(product, "NOT_FOUND", 404);
+      await membership(db, userId, product.store_id);
+      product.variants = await db("product_variants as v")
+        .join("inventories as i", "i.variant_id", "v.id")
+        .where("v.product_id", id).whereNull("i.store_address_id")
+        .select("v.id", "v.name", "v.price", "v.status", "i.on_hand", "i.reserved")
+        .select(db.raw("i.on_hand - i.reserved as available")).orderBy("v.id");
+      return product;
+    },
     async createProduct(ctx, storeId, input) {
       return db.transaction(async (t) => {
         await membership(t, ctx.id, storeId, ["owner", "manager"]);
@@ -327,8 +339,10 @@ export function managementRepository(db, mediaService) {
         const p = await t("products").where({ id }).forUpdate().first();
         ensure(p, "NOT_FOUND", 404);
         await membership(t, ctx.id, p.store_id, ["owner", "manager"]);
+        const store = await t("stores").where({ id: p.store_id }).forShare().first();
+        ensure(store && !store.deleted_at && !["suspended", "closed"].includes(store.status), "STORE_RESTRICTED");
         ensure(
-          !["suspended", "archived"].includes(p.status),
+          !p.deleted_at && !["suspended", "archived"].includes(p.status),
           "PRODUCT_RESTRICTED",
         );
         if (input.category_id)
@@ -365,6 +379,7 @@ export function managementRepository(db, mediaService) {
         const store = await t("stores").where({ id: p.store_id }).first();
         ensure(
           store &&
+            !store.deleted_at && !p.deleted_at &&
             !["suspended", "closed"].includes(store.status) &&
             !["suspended", "archived"].includes(p.status),
           "STORE_OR_PRODUCT_RESTRICTED",

@@ -1,6 +1,7 @@
 import knex from "knex";
 import config from "./knexfile.js";
-export function connect(connection = process.env.DATABASE_URL) {
+import { databaseFromEnv } from "../src/config.js";
+export function connect(connection = databaseFromEnv()) {
   if (!connection) throw new Error("DATABASE_URL is required");
   return knex({ ...config, connection });
 }

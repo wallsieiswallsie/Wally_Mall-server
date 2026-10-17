@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { hashPassword } from "../../src/security.js";
+import { seedFromEnv } from "../../src/config.js";
 export async function seed(db) {
-  if (process.env.NODE_ENV === "production")
+  const { production, email, password } = seedFromEnv();
+  if (production)
     throw new Error("Development seed disabled in production");
-  const email = process.env.SEED_SUPER_ADMIN_EMAIL,
-    password = process.env.SEED_SUPER_ADMIN_PASSWORD;
   if (!email || !password || password.length < 12)
     throw new Error(
       "Set explicit SEED_SUPER_ADMIN_EMAIL and SEED_SUPER_ADMIN_PASSWORD (12+ characters)",

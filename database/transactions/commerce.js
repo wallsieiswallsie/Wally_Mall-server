@@ -618,7 +618,9 @@ export function commerceRepository(db, config) {
                   "currency",
                   "paid_at",
                 ]
-              : ["status", "method"],
+              : audience === "buyer"
+                ? ["id", "status", "method", "expires_at"]
+                : ["status", "method"],
           );
         row.items = await db("order_items")
           .where({ order_id: o.id })

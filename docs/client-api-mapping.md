@@ -1,6 +1,6 @@
 # Client to API mapping
 
-Live integration is implemented in `client/src/live/ServerApp.jsx` through `client/src/api/client.js`. The original page names below identify feature counterparts in the isolated prototype. See [current integration coverage, verification and gaps](../../docs/client-server-integration.md).
+Live integration is implemented in `client/packages/shared/live/ServerApp.jsx` through `client/packages/api-client/client.js`. The original page names below identify feature counterparts in the isolated prototype. See [current integration coverage, verification and gaps](integration-recovery.md).
 
 Prefix: `/api/v1`. All persistence IDs are UUIDs; prototype slugs are only public discovery keys. Requests use strict JSON objects. Money responses are decimal strings, not JS floating-point values. Authenticated routes require `Authorization: Bearer <access_token>`. Roles, user ownership, store ownership, prices and stock never come from client assertions.
 
@@ -18,7 +18,7 @@ Prefix: `/api/v1`. All persistence IDs are UUIDs; prototype slugs are only publi
 | SellerDashboard | GET /seller/stores, /seller/overview, /seller/orders, /seller/stores/:storeId/products |
 | Store details/location | PATCH /seller/stores/:id with allowed fields and optional primary `address` |
 | AddProduct | POST /seller/stores/:storeId/products; variants each contain name, string price, on_hand; media and tags are separate collections |
-| Product maintenance | PATCH /seller/products/:id; PATCH /seller/variants/:id for price or stock |
+| Product maintenance | GET /seller/products/:id includes private variant inventory; PATCH /seller/products/:id; PATCH /seller/variants/:id for price or stock |
 | saveAddress | GET/POST /addresses; PATCH/DELETE /addresses/:id (PATCH submits the complete address representation) |
 | addToCart | POST /cart/items `{variant_id,quantity}`; same variant increments existing quantity |
 | changeQuantity | PATCH /cart/items/:id `{quantity}`; zero removes it |
@@ -26,7 +26,7 @@ Prefix: `/api/v1`. All persistence IDs are UUIDs; prototype slugs are only publi
 | checkout | POST /checkouts `{address_id,method,fulfillment:{storeUUID:canonicalType}}` |
 | Payment page | GET /checkouts/:id; GET /payments/:id; POST /payments/:id/session retrieves provider intent/reference |
 | paymentEvent | No browser equivalent. Verified provider calls POST /payments/webhook/mock in development |
-| Buyer Orders | GET /orders and /orders/:id; snapshots and projected status |
+| Buyer Orders | GET /orders and /orders/:id; snapshots, projected status and owned payment `{id,status,method,expires_at}` for recovery |
 | Seller updateOrder | PATCH /seller/orders/:id/status `{status}`; active store membership required |
 | Notifications | GET /notifications; PUT /notifications/:id/read |
 | Operational overview | GET /admin/overview; order counts from actual rows |

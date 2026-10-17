@@ -9,7 +9,9 @@ export function paymentRepository(db, adapter) {
         .select("p.*")
         .first();
       ensure(payment, "NOT_FOUND", 404);
+      ensure(payment.provider === adapter.provider, "PAYMENT_PROVIDER_MISMATCH");
       ensure(payment.status === "pending", "PAYMENT_TERMINAL");
+      ensure(new Date(payment.expires_at) > new Date(), "PAYMENT_EXPIRED");
       // Provider must use payment.id as its idempotency key; retries reuse the same intent.
       const result = await adapter.createPayment(payment);
       await db("payments")

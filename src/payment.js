@@ -1,5 +1,13 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { ensure } from "./domain.js";
+export function validateProvider(provider) {
+  if (provider !== "mock") throw new Error("Unsupported PAYMENT_PROVIDER; only mock is implemented");
+  return provider;
+}
+export function paymentAdapter(config) {
+  validateProvider(config.provider);
+  return new MockPaymentAdapter(config.webhook);
+}
 export class PaymentAdapter {
   async createPayment() {
     throw new Error("Payment provider not configured");
@@ -18,6 +26,7 @@ export class PaymentAdapter {
 export class MockPaymentAdapter extends PaymentAdapter {
   constructor(secret) {
     super();
+    this.provider = "mock";
     this.secret = secret;
   }
   async createPayment(payment) {

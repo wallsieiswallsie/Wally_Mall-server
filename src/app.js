@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { randomUUID } from "node:crypto";
-import { checkConnection } from "../database/index.js";
+import { checkReadiness } from "../database/readiness.js";
 import {
   identityRepository,
   publicUser,
@@ -21,28 +21,31 @@ import {
   signAccess,
   verifyAccess,
 } from "./security.js";
-import { MockPaymentAdapter } from "./payment.js";
+import { paymentAdapter, validateProvider } from "./payment.js";
 import * as v from "./validation.js";
 import { mediaService } from "./media.js";
 import { gcsStorage } from "./gcs.js";
+import { bucketFromEnv } from "./config.js";
 const API_PREFIX = "/api/v1";
 export async function buildApp({
   db,
   config,
-  adapter = new MockPaymentAdapter(config.webhook),
+  adapter = paymentAdapter(config),
   storage = gcsStorage(config.gcs),
 }) {
+  validateProvider(config.provider);
+  if (adapter.provider !== config.provider) throw new Error("Payment adapter/provider mismatch");
   const app = Fastify({
     logger: true,
     disableRequestLogging: true,
     bodyLimit: 262144,
     genReqId: () => randomUUID(),
-    trustProxy: false,
+    trustProxy: config.trustedProxies ?? false,
   });
   const media = mediaService(
     db,
     storage,
-    config.gcs?.bucket || "wallymall-media-prod",
+    config.gcs?.bucket || bucketFromEnv(),
   );
   const auth = identityRepository(db),
     catalog = catalogRepository(db),
@@ -150,9 +153,13 @@ export async function buildApp({
       },
     });
   app.get("/health", async () => ({ status: "ok" }));
-  app.get("/ready", async () => {
-    await checkConnection(db);
-    return { status: "ready" };
+  app.get("/ready", async (req, reply) => {
+    try {
+      await checkReadiness(db);
+      return { status: "ready" };
+    } catch {
+      return reply.code(503).send({ status: "not_ready" });
+    }
   });
   // Hash once for timing-consistent unknown-user login attempts.
   const dummy = await hashPassword(randomUUID());
@@ -408,6 +415,9 @@ export async function buildApp({
   );
   route("GET", "/seller/stores/:storeId/products", ["seller"], null, (req) =>
     management.products(req.user.id, req.params.storeId),
+  );
+  route("GET", "/seller/products/:id", ["seller"], null, (req) =>
+    management.product(req.user.id, req.params.id),
   );
   route(
     "POST",

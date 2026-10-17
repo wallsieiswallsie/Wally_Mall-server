@@ -90,7 +90,7 @@ See [Railway pre-deploy documentation](https://docs.railway.com/deployments/pre-
   integration constraints/indexes. Existing media tests reject expiring URLs.
 - Use a dedicated disposable PostgreSQL database for `TEST_DATABASE_URL` and
   run `npm test` with that variable injected. Without it, database and startup
-  tests skip. The integration suite resets its public schema: never target an
+  tests skip. The integration suite requires a fresh disposable database: never target an
   application database. No extra infrastructure or dependencies were introduced.
 - When CI is available, provision a clean PostgreSQL service and run this suite;
   it executes the same Knex `migrate.latest()` implementation as the CLI, plus

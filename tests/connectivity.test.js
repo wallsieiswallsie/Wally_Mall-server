@@ -5,11 +5,13 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { buildApp } from "../src/app.js";
 import { configFromEnv } from "../src/config.js";
+import { expectedMigrations } from '../database/readiness.js';
 
 const origin = "https://wallymall-client-production.up.railway.app";
 const env = {
   NODE_ENV: "production",
   PAYMENT_PROVIDER: "mock",
+  GCS_BUCKET: "wally-test-media",
   ACCESS_TOKEN_SECRET: randomBytes(32).toString("hex"),
   PAYMENT_WEBHOOK_SECRET: randomBytes(32).toString("hex"),
   CORS_ORIGINS: ` ${origin} , http://localhost:5173 `,
@@ -25,6 +27,7 @@ test("production config reaches CORS; dependency failures remain private and dia
   };
   db.raw = async () => {
     if (failure) throw failure;
+    return { rows: expectedMigrations.map(name => ({ name })) };
   };
   const app = await buildApp({ db, config });
   t.after(() => app.close());
@@ -77,22 +80,9 @@ test("production config reaches CORS; dependency failures remain private and dia
       url: "/ready?token=private-query",
       headers: { origin, authorization: "Bearer private-token" },
     });
-    assert.equal(response.statusCode, 500);
+    assert.equal(response.statusCode, 503);
     assert.equal(response.headers["access-control-allow-origin"], origin);
-    const body = response.json();
-    assert.deepEqual(body, {
-      error: {
-        code: "INTERNAL_ERROR",
-        request_id: response.headers["x-request-id"],
-      },
-    });
-    assert.deepEqual(logs.at(-1), {
-      request_id: body.error.request_id,
-      route: "/ready",
-      status: 500,
-      error_code: expected,
-      message: "Request failed",
-    });
+    assert.deepEqual(response.json(), { status: "not_ready" });
     assert.equal((await app.inject("/health")).statusCode, 200);
   }
   for (const url of [

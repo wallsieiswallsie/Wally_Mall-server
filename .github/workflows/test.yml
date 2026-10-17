@@ -1,0 +1,46 @@
+name: Server and explicit client contract
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  standalone:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: test_only
+          POSTGRES_DB: wally_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:test_only@localhost:5432/wally_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm test
+  contract:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: test_only
+          POSTGRES_DB: wally_contract_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:test_only@localhost:5432/wally_contract_test
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: server }
+      - uses: actions/checkout@v4
+        with:
+          repository: wallsieiswallsie/Wally_Mall-client
+          path: client
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+        working-directory: server
+      - run: CLIENT_API_MODULE="$GITHUB_WORKSPACE/client/packages/api-client/client.js" npm run test:contract
+        working-directory: server

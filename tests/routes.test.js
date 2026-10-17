@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { buildApp } from "../src/app.js";
 import { configFromEnv } from "../src/config.js";
+import { expectedMigrations } from '../database/readiness.js';
 
 test("critical production routes are registered with the canonical API prefix", async (t) => {
   const config = configFromEnv({
@@ -10,7 +11,7 @@ test("critical production routes are registered with the canonical API prefix", 
     PAYMENT_WEBHOOK_SECRET: randomBytes(32).toString("hex"),
   });
   const db = () => { throw new Error("No database query expected"); };
-  db.raw = async () => [{ result: 1 }];
+  db.raw = async () => ({ rows: expectedMigrations.map(name => ({ name })) });
   const app = await buildApp({ db, config, storage: {} });
   t.after(() => app.close());
   await app.ready();

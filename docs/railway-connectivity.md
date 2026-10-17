@@ -1,3 +1,5 @@
+Current operational instructions: [Integration recovery](integration-recovery.md). This report records an earlier audit; counts and deployment observations below are historical.
+
 # Railway connectivity audit — 2026-10-07
 
 ## Current production evidence
@@ -39,7 +41,7 @@ API target. The deployed client URL is not the current failure.
   this handler; browser errors retain their existing contract.
 - At the time of this earlier connectivity audit, the ignored local client env
   used a hyphenated server host. The current URL contract and Railway steps are
-  documented in [API routing](../../docs/api-routing.md); verify the actual
+  documented in [API routing](integration-recovery.md); verify the actual
   Railway domain rather than reusing a host from this historical report.
 
 The loopback default is a proven repository defect and a plausible explanation
@@ -59,7 +61,7 @@ and does not match; configure the value without one. CORS is registered before
 origin validation and routes. Allowed-origin application errors retain CORS
 headers. No wildcard, authentication or origin-validation changes were needed.
 
-`ServerApp.jsx` now passes `import.meta.env.VITE_API_URL` to `createApi()`.
+`client/packages/shared/live/ServerApp.jsx` passes centralized `config.apiBaseUrl` to `createApi()`. `client/packages/api-client/config.js` reads `VITE_API_URL`. See the [role workspace deployment guide](integration-recovery.md) for portal origins and service commands.
 Vite embeds this value at build time. The client validates an origin-only URL
 and adds `/api/v1` centrally to paths such as `/products?limit=5`.
 An empty development value uses Vite's same-origin proxy.
@@ -73,8 +75,7 @@ either proxy. The production origin bypasses them.
 The same Knex config supplies the migration CLI. Migration and seed paths are
 absolute and resolved from `database/knexfile.js`. Connection creation is lazy:
 startup and `/health` do not establish PostgreSQL readiness. `/ready` executes
-`select 1`. Catalog endpoints execute real repository queries and can detect
-missing tables even when `/ready` succeeds. No SQL or schema defect was
+migration history and critical schema columns. Catalog endpoints execute real repository queries. No SQL or schema defect was
 established as the cause of the current production 502.
 
 `npm start` runs the long-lived HTTP entrypoint. Migration commands exit after
@@ -135,8 +136,7 @@ Commands below run from the directory containing that service's package.json.
 For the client, Railpack detects Vite and serves `dist` with Caddy and SPA
 fallback. If needed, `RAILPACK_SPA_OUTPUT_DIR=dist` explicitly selects static
 SPA mode. This is a documented configuration option, not a claim about the
-currently deployed frontend's builder. No production start script exists in
-the client package; `npm run preview` is a local inspection command. The public
+currently deployed frontend's builder. The client now provides production start scripts; `npm run preview` is a local inspection command. The public
 frontend already works, so no hosting rewrite is required for this incident.
 
 After setting HOST or deploying the binding fix, verify the server public
@@ -171,7 +171,7 @@ readiness succeeds but catalog fails, inspect migration state with
 indicates a missing relation; it is not a CORS error.
 
 Local verification uses client tests/build and server tests. PostgreSQL tests
-must use a separate disposable database: they reset its public schema.
+must use a separate disposable database: they require a fresh database and refuse existing migration history.
 Never run that suite against Railway's application database.
 
 ### Results from this audit

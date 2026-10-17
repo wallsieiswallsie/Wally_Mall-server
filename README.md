@@ -1,6 +1,6 @@
 # Wally Mall server
 
-Backend Node.js 22 / Fastify / Knex / PostgreSQL. `client/` now uses these APIs by default; the old prototype is an explicit opt-in mode. See [combined setup](../README.md) and [integration audit and remaining gaps](../docs/client-server-integration.md).
+Backend Node.js 22 / Fastify / Knex / PostgreSQL. The separate [client repository](https://github.com/wallsieiswallsie/Wally_Mall-client) uses these APIs by default; the prototype is an explicit opt-in mode. See [integration setup and remaining gaps](docs/integration-recovery.md).
 
 **`database/` is the authoritative database module.** Its original `migrations/001_identity.js` through `010_finance.js` define the frozen 50-table, 19-enum contract. They have not been rewritten. The original migration README references `Wally_Mall.sql`, but that SQL/ERD artifact is absent from this checkout. No replacement ERD has been generated.
 
@@ -32,7 +32,7 @@ npm.cmd --prefix server run db:status
 npm.cmd --prefix server start
 ```
 
-`GET http://127.0.0.1:3001/health` checks the process. `/ready` checks PostgreSQL connectivity. Mock payments remain available for deployed testing with `NODE_ENV=production`; no real payment is processed. See the [Railway connectivity audit and deployment runbook](docs/railway-connectivity.md) for binding, build-time client variables, migrations and verification.
+`GET http://127.0.0.1:3001/health` checks the process. `/ready` checks migration history and critical schema objects. Mock payments remain available for deployed testing with `NODE_ENV=production`; no real payment is processed. See the [current deployment runbook](docs/integration-recovery.md) and [verification report](docs/integration-verification-2026-10-18.md).
 
 Never commit `.env`. Generate each token/signature secret using a cryptographically secure random generator. Set `CORS_ORIGINS` to exact trusted origins; wildcard origins are unsupported. Authorization uses explicit Bearer headers, not automatically attached cookies. Browser integration must keep refresh credentials out of localStorage; a secure BFF/cookie transport would also require CSRF controls. No browser role picker is trusted.
 
@@ -93,3 +93,7 @@ npm.cmd --prefix server run test:integration
 Without `TEST_DATABASE_URL`, integration tests explicitly skip; unit tests still run. Use the separate integration command when `.env` supplies the test URL. Tests exercise real original migrations, rollback, authorization, stock concurrency, late-failure rollback, snapshots, payment replay, refund retry, moderation and audit immutability. [Verification report](docs/verification.md) records the checks actually executed in this task.
 
 Read [database contract](docs/database-contract.md), [status mapping](docs/status-mapping.md), and [database gaps](docs/database-gap-report.md) before extending persistence.
+
+## Integration recovery
+
+See [current contracts, native tests and Railway services](docs/integration-recovery.md). Standalone tests no longer import a sibling client checkout; explicit cross-repository verification uses `npm run test:contract`.

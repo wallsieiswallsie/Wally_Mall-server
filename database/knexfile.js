@@ -1,7 +1,8 @@
 import { fileURLToPath } from "node:url";
+import { databaseFromEnv } from "../src/config.js";
 export default {
   client: "pg",
-  connection: process.env.DATABASE_URL,
+  connection: databaseFromEnv(),
   pool: { min: 0, max: 10 },
   acquireConnectionTimeout: 5000,
   migrations: {

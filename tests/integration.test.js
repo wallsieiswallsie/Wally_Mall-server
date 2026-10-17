@@ -5,10 +5,12 @@ import { readFile } from "node:fs/promises";
 import { connect } from "../database/index.js";
 import { buildApp } from "../src/app.js";
 import { commerceRepository } from "../database/transactions/commerce.js";
-import { createApi } from '../../client/src/api/client.js';
+import { readdir } from 'node:fs/promises';
 import { verifyPassword } from '../src/security.js';
 import { ensure } from '../src/domain.js';
 import { mediaService } from '../src/media.js';
+import { recoveryScenarios } from './recovery-scenarios.js';
+import { checkReadiness } from '../database/readiness.js';
 const url = process.env.TEST_DATABASE_URL;
 const config = {
   secret: "a".repeat(40),
@@ -34,13 +36,15 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
   const db = connect(url);
   let app;
   try {
-    await db.raw("DROP SCHEMA public CASCADE");
-    await db.raw("CREATE SCHEMA public");
+    assert.equal(await db.schema.hasTable("knex_migrations"), false, "Use a new disposable database; never reset an existing database");
+    await assert.rejects(checkReadiness(db));
+    assert.equal(await db.schema.hasTable('knex_migrations'), false, 'Readiness never creates migration history');
+    const migrationCount = (await readdir(new URL("../database/migrations/", import.meta.url))).filter(name => name.endsWith(".js")).length;
     const migration = await db.migrate.latest();
-    assert.equal(migration[1].length, 12);
+    assert.equal(migration[1].length, migrationCount);
     assert.equal((await db.migrate.list())[1].length, 0);
     await db.migrate.rollback(undefined, true);
-    assert.equal((await db.migrate.list())[1].length, 12);
+    assert.equal((await db.migrate.list())[1].length, migrationCount);
     await db.migrate.latest();
     await t.test('012 upgrade, rollback, and missing-baseline repair are atomic', async () => {
       const name = '20261007121411_012_media_assets.js';
@@ -180,6 +184,7 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
     };
     const p1 = await product(s1, "shoe"),
       p2 = await product(s2, "shirt");
+    await recoveryScenarios({ t, app, db, seller, outsider, buyer, product, newStore });
     const addressData = {
       recipient_name: "Buyer",
       phone: "081234567",
@@ -417,6 +422,16 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
         );
         assert.equal(result.status, 200, JSON.stringify(result));
         checkout = result.data;
+        const buyerOrders = (await request('GET', '/orders', null, buyer.access_token)).data;
+        assert.equal(buyerOrders[0].payment.id, checkout.payment.id);
+        assert.equal((await request('GET', `/checkouts/${checkout.id}`, null, buyer.access_token)).data.payment.id, checkout.payment.id);
+        assert.equal((await request('GET', `/payments/${checkout.payment.id}`, null, other.access_token)).status, 404);
+        assert.equal((await request('POST', `/payments/${checkout.payment.id}/session`, null, other.access_token)).status, 404);
+        const firstSession = await request('POST', `/payments/${checkout.payment.id}/session`, null, buyer.access_token);
+        const repeatedSession = await request('POST', `/payments/${checkout.payment.id}/session`, null, buyer.access_token);
+        assert.equal(firstSession.status, 200);
+        assert.equal(firstSession.data.provider_reference, repeatedSession.data.provider_reference);
+        assert.equal((await db('payments').where({ checkout_id: checkout.id })).length, 1);
         assert.equal(checkout.orders.length, 2);
         assert.equal(checkout.grand_total, "41500");
         const orders = await db("orders").where({ checkout_id: checkout.id });
@@ -740,7 +755,13 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
         await db("payments")
           .where({ id: result.data.payment.id })
           .update({ expires_at: new Date(0) });
-        await commerceRepository(db, config).expire();
+        const beforeExpiry = await db('inventories').where({ variant_id: p1.variant.id }).first();
+        assert.equal((await request('POST', `/payments/${result.data.payment.id}/session`, null, fresh.access_token)).error.code, 'PAYMENT_EXPIRED');
+        await Promise.all([commerceRepository(db, config).expire(), commerceRepository(db, config).expire()]);
+        const afterExpiry = await db('inventories').where({ variant_id: p1.variant.id }).first();
+        assert.equal(afterExpiry.reserved, beforeExpiry.reserved - 1);
+        assert.equal(afterExpiry.on_hand, beforeExpiry.on_hand);
+        assert.equal((await commerceRepository(db, config).expire()).expired, 0);
         assert.equal(
           (await db("checkouts").where({ id: result.data.id }).first()).status,
           "expired",
@@ -1069,69 +1090,10 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
         );
       },
     );
-    await t.test('real frontend API layer: auth refresh, buyer checkout, seller and admin contracts', async () => {
-      let forceExpired = false, refreshCalls = 0;
-      const tokens = new Map();
-      const storage = { getItem: key => tokens.get(key), setItem: (key, value) => tokens.set(key, value), removeItem: key => tokens.delete(key) };
-      const fetchImpl = async (url, options) => {
-        const headers = { ...options.headers, origin: 'http://localhost:5173' };
-        if (forceExpired && url.endsWith('/users/me')) { headers.Authorization = 'Bearer expired'; forceExpired = false; }
-        if (url.endsWith('/auth/refresh')) refreshCalls++;
-        const res = await app.inject({ method: options.method, url, headers, payload: options.body });
-        return new Response(res.body, { status: res.statusCode });
-      };
-      const client = createApi({ fetchImpl, storage });
-      const user = await client.authenticate(true, { name: 'Browser flow', email: 'browser@example.test', password: 'Test-only-password-123!' });
-      assert.deepEqual(user.roles, ['buyer']);
-      forceExpired = true;
-      assert.equal((await client.request('/users/me')).id, user.id);
-      assert.equal(refreshCalls, 1);
-      const [cat] = await db('categories').insert({ name: 'Browser catalog', slug: 'browser-catalog' }).returning('*');
-      const store = await newStore('browser-store');
-      const item = await product(store, 'browser-product', 8, '12000');
-      await db('products').where({ id: item.id }).update({ category_id: cat.id });
-      await db('stores').where({ id: store.id }).update({ primary_category_id: cat.id });
-      const detail = await client.request(`/products/by-slug/${item.slug}`, { auth: false });
-      assert.equal(detail.variants[0].id, item.variant.id);
-      assert.equal(typeof detail.variants[0].price, 'string');
-      assert.ok((await client.request('/search?q=browser&type=store', { auth: false })).some(s => s.id === store.id));
-      await client.request(`/favorites/${item.id}`, { method: 'PUT' });
-      assert.equal((await client.request('/favorites'))[0].id, item.id);
-      const address = await client.request('/addresses', { method: 'POST', body: addressData });
-      await client.request('/cart/items', { method: 'POST', body: { variant_id: item.variant.id, quantity: 2 } });
-      const cart = await client.request('/cart');
-      assert.equal(cart.items[0].quantity, 2);
-      const body = { method: 'qris', fulfillment: { [store.id]: 'pickup' }, address_id: address.id };
-      const quote = await client.request('/cart/quote', { method: 'POST', body });
-      const checkout = await client.request('/checkouts', { method: 'POST', body });
-      assert.equal(checkout.grand_total, quote.grand_total);
-      const payment = await client.request(`/payments/${checkout.payment.id}`);
-      assert.equal(payment.status, 'pending');
-      assert.ok((await client.request(`/payments/${payment.id}/session`, { method: 'POST' })).provider_reference);
-      const paid = await event(checkout.payment, 'success');
-      assert.equal(paid.statusCode, 200);
-      const orders = await client.request('/orders');
-      assert.equal(orders[0].status, 'confirmed');
-      assert.equal(orders[0].items[0].product_name, item.name);
-      assert.equal(orders[0].payment.id, undefined, 'Buyer order intentionally does not expose payment ID');
-      assert.ok((await client.request('/notifications')).length);
-      await client.request('/reports', { method: 'POST', body: { target_type: 'order', target_id: orders[0].id, category: 'delivery', description: 'Browser report test' } });
-      await grant({ user }, 'seller');
-      await db('store_members').insert({ store_id: store.id, user_id: user.id, role: 'owner' });
-      assert.ok((await client.request('/users/me')).roles.includes('seller'));
-      const owned = await client.request(`/seller/stores/${store.id}/products`);
-      assert.equal(owned[0].variants, undefined, 'Seller list has no variant detail contract');
-      await client.request(`/seller/orders/${orders[0].id}/status`, { method: 'PATCH', body: { status: 'processing' } });
-      await assert.rejects(client.request('/admin/orders'), { status: 403 });
-      const privileged = createApi({ fetchImpl });
-      await privileged.authenticate(false, { email: 'super@example.test', password: 'Test-only-password-123!' });
-      assert.ok((await privileged.request('/super-admin/transactions')).some(o => o.id === orders[0].id));
-      const restored = createApi({ fetchImpl, storage });
-      assert.equal((await restored.restore()).id, user.id);
-      await restored.logout();
-      assert.equal(await restored.restore(), null);
-      await privileged.logout();
-    });
+    if (process.env.CLIENT_API_MODULE) {
+      const { clientContract } = await import('./contracts/client.js');
+      await clientContract({ t, app, db, newStore, product, addressData, event, grant });
+    }
     await t.test("category master: RBAC, validation, rename, status and safe delete", async () => {
       // Separate client address so this subtest has its own rate-limit budget.
       const request = async (method, path, body, token) => {

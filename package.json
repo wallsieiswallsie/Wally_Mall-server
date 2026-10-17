@@ -20,7 +20,8 @@
     "test:integration": "node --env-file-if-exists=.env --test --test-concurrency=1 tests/integration.test.js",
     "payments:expire": "node --env-file-if-exists=.env src/expire.js",
     "media:cleanup": "node --env-file-if-exists=.env src/cleanup-media.js",
-    "media:cors": "node --env-file-if-exists=.env src/media-cors.js"
+    "media:cors": "node --env-file-if-exists=.env src/media-cors.js",
+    "test:contract": "node scripts/test-contract.js"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
@@ -36,6 +37,8 @@
     "prettier": "^3.9.9"
   },
   "overrides": {
-    "gaxios": { "uuid": "^11.1.1" }
+    "gaxios": {
+      "uuid": "^11.1.1"
+    }
   }
 }

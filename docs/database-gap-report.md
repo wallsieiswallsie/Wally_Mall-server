@@ -4,7 +4,7 @@ The schema is unchanged. These are documented limits, not implemented migration 
 
 ## Requirement: editable platform settings
 
-**Evidence:** `client/src/pages/internal/Administration.jsx` Settings and `PrototypeContext.action('settings')` save region, city and supportHours.
+**Evidence:** `client/apps/admin/src/prototype/Administration.jsx` Settings and `PrototypeContext.action('settings')` save region, city and supportHours.
 
 **Existing database support:** addresses store geographic snapshots; platform_fee_rules stores fees. There is no platform-settings entity.
 

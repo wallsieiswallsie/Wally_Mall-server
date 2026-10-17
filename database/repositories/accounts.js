@@ -68,7 +68,9 @@ export function accountsRepository(db) {
     async checkout(userId, id) {
       const row = await db("checkouts").where({ id, buyer_id: userId }).first();
       ensure(row, "NOT_FOUND", 404);
-      return pick(row, [
+      const payment = await db("payments").where({ checkout_id: id })
+        .first("id", "status", "method", "expires_at");
+      return { ...pick(row, [
         "id",
         "checkout_number",
         "status",
@@ -79,7 +81,7 @@ export function accountsRepository(db) {
         "grand_total",
         "currency",
         "expires_at",
-      ]);
+      ]), payment };
     },
     async payment(userId, id) {
       const row = await db("payments as p")
