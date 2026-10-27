@@ -8,7 +8,7 @@ test("unsupported provider fails config and app startup, including injected adap
     ACCESS_TOKEN_SECRET: "a".repeat(40),
     PAYMENT_WEBHOOK_SECRET: "b".repeat(40),
   };
-  for (const provider of ["xendit", "midtrans", "", "MOCK"]) {
+  for (const provider of ["midtrans", "", "MOCK"]) {
     assert.throws(
       () => configFromEnv({ ...env, PAYMENT_PROVIDER: provider }),
       /Unsupported PAYMENT_PROVIDER/,

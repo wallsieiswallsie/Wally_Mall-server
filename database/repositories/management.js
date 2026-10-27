@@ -859,49 +859,234 @@ export function managementRepository(db, mediaService) {
           .toString(),
       };
     },
-    async metrics(financial = false, storeId) {
-      const q = db("orders");
-      if (storeId) q.where({ store_id: storeId });
-      const rows = await q.select(
-        "id",
-        "status",
-        "subtotal",
-        "platform_fee",
-        "service_fee",
-        "buyer_id",
-        "store_id",
+    // Dashboard overview. Admin receives operational counts only; money,
+    // buyer counts and payment data are restricted to Super Admin.
+    async overview(financial = false, days = 30) {
+      const zone = "Asia/Jakarta";
+      const today = `(date_trunc('day', now() AT TIME ZONE '${zone}') AT TIME ZONE '${zone}')`;
+      const int = (v) => Number(v ?? 0);
+      const rate = (n, d) => (d ? Math.round((n / d) * 1000) / 10 : null);
+      const since = (n) => db.raw("now() - (? * interval '1 day')", [n]);
+      const [current] = (
+        await db.raw(`SELECT
+          count(*) FILTER (WHERE created_at >= ${today}) AS orders_today,
+          count(*) FILTER (WHERE status = 'awaiting_payment') AS awaiting_payment,
+          count(*) FILTER (WHERE status = 'confirmed') AS awaiting_processing,
+          count(*) FILTER (WHERE status = 'processing') AS processing,
+          count(*) FILTER (WHERE status IN ('ready', 'in_delivery')) AS awaiting_delivery,
+          count(*) FILTER (WHERE status = 'completed' AND completed_at >= ${today}) AS completed_today
+          FROM orders`)
+      ).rows;
+      const statuses = Object.fromEntries(
+        (
+          await db("orders")
+            .where("created_at", ">=", since(days))
+            .select("status")
+            .count({ n: "*" })
+            .groupBy("status")
+        ).map((r) => [r.status, int(r.n)]),
       );
-      const statuses = {};
-      for (const row of rows)
-        statuses[row.status] = (statuses[row.status] ?? 0) + 1;
-      const result = { orders: rows.length, statuses };
-      if (financial) {
-        const refunded = new Set(
-          await db("refunds").where({ status: "success" }).pluck("order_id"),
-        );
-        const paid = rows.filter(
-          (o) =>
-            [
-              "confirmed",
-              "processing",
-              "ready",
-              "in_delivery",
-              "completed",
-            ].includes(o.status) && !refunded.has(o.id),
-        );
-        result.gmv = paid
-          .reduce((n, o) => n + money(o.subtotal), 0n)
-          .toString();
-        result.revenue = paid
-          .reduce(
-            (n, o) => n + money(o.platform_fee) + money(o.service_fee),
-            0n,
+      const queue = async (query, list) => ({
+        count: int((await query.clone().count({ n: "*" }).first()).n),
+        items: await list(query.clone()).limit(5),
+      });
+      const applications = await queue(
+        db("seller_applications as a").whereIn("a.status", [
+          "submitted",
+          "under_review",
+        ]),
+        (q) =>
+          q
+            .leftJoin("categories as c", "c.id", "a.business_category_id")
+            .select(
+              "a.id",
+              "a.proposed_store_name",
+              "c.name as business_category_name",
+              "a.status",
+              "a.submitted_at",
+            )
+            .orderBy("a.submitted_at", "asc"),
+      );
+      const products = await queue(
+        db("products as p")
+          .where("p.moderation_status", "pending")
+          .whereNull("p.deleted_at"),
+        (q) =>
+          q
+            .join("stores as s", "s.id", "p.store_id")
+            .select("p.id", "p.name", "s.name as store_name", "p.created_at")
+            .orderBy("p.created_at", "asc"),
+      );
+      // Report free text may contain personal data; the overview lists only the type.
+      const reports = await queue(
+        db("reports").whereIn("status", ["open", "reviewing"]),
+        (q) =>
+          q
+            .select("id", "target_type", "category", "status", "created_at")
+            .orderBy("created_at", "asc"),
+      );
+      const result = {
+        days,
+        generated_at: new Date().toISOString(),
+        operations: {
+          orders_today: int(current.orders_today),
+          awaiting_payment: int(current.awaiting_payment),
+          awaiting_processing: int(current.awaiting_processing),
+          processing: int(current.processing),
+          awaiting_delivery: int(current.awaiting_delivery),
+          completed_today: int(current.completed_today),
+          pending_applications: applications.count,
+          products_pending_review: products.count,
+          open_reports: reports.count,
+          support_cases: null,
+        },
+        orders_in_range: Object.values(statuses).reduce((a, b) => a + b, 0),
+        statuses,
+        queues: {
+          applications: applications.items,
+          products: products.items,
+          reports: reports.items,
+        },
+        unavailable: { support_cases: "SUPPORT_CASE_MODEL_MISSING" },
+      };
+      if (!financial) return result;
+
+      // A sale counts only when a non-simulated provider confirmed the payment
+      // and no successful refund exists. Mock-provider payments are excluded.
+      const settled = "('success', 'partially_refunded', 'refunded')";
+      const windowed = `WITH o AS (
+        SELECT o.*,
+          EXISTS (SELECT 1 FROM payments p WHERE p.checkout_id = o.checkout_id
+            AND p.status IN ${settled} AND p.provider <> 'mock') AS verified_paid,
+          EXISTS (SELECT 1 FROM payments p WHERE p.checkout_id = o.checkout_id
+            AND p.status IN ${settled} AND p.provider = 'mock') AS simulated_paid,
+          EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.id
+            AND r.status = 'success') AS refunded
+        FROM orders o
+        WHERE o.created_at >= now() - (? * interval '1 day')
+          AND o.created_at < now() - (? * interval '1 day')
+      ), c AS (
+        SELECT o.*, (verified_paid AND NOT refunded AND status IN
+          ('confirmed', 'processing', 'ready', 'in_delivery', 'completed')) AS counted
+        FROM o
+      )`;
+      const totals = async (from, to) =>
+        (
+          await db.raw(
+            `${windowed} SELECT
+            count(*) AS orders,
+            count(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+            count(*) FILTER (WHERE verified_paid) AS paid_orders,
+            count(*) FILTER (WHERE status = 'completed' AND verified_paid) AS paid_completed,
+            count(*) FILTER (WHERE verified_paid AND refunded) AS refunded_orders,
+            count(*) FILTER (WHERE simulated_paid) AS simulated_orders,
+            count(*) FILTER (WHERE counted) AS transactions,
+            coalesce(sum(subtotal) FILTER (WHERE counted), 0)::text AS gmv,
+            coalesce(sum(platform_fee + service_fee) FILTER (WHERE counted), 0)::text AS revenue,
+            count(DISTINCT buyer_id) FILTER (WHERE counted) AS active_buyers,
+            count(DISTINCT store_id) FILTER (WHERE counted) AS active_stores
+            FROM c`,
+            [from, to],
           )
-          .toString();
-        result.transactions = paid.length;
-        result.active_buyers = new Set(paid.map((o) => o.buyer_id)).size;
-        result.active_stores = new Set(paid.map((o) => o.store_id)).size;
-      }
+        ).rows[0];
+      const now = await totals(days, 0);
+      const prev = await totals(days * 2, days);
+      const [repeat] = (
+        await db.raw(
+          `${windowed} SELECT count(*) AS buyers, count(*) FILTER (WHERE n > 1) AS repeat
+          FROM (SELECT buyer_id, count(DISTINCT checkout_id) AS n FROM c WHERE counted GROUP BY buyer_id) b`,
+          [days, 0],
+        )
+      ).rows;
+      const [payment] = (
+        await db.raw(
+          `SELECT count(*) FILTER (WHERE status IN ${settled}) AS success,
+            count(*) FILTER (WHERE status <> 'pending') AS decided
+           FROM payments WHERE provider <> 'mock'
+             AND created_at >= now() - (? * interval '1 day')`,
+          [days],
+        )
+      ).rows;
+      const daily = (
+        await db.raw(
+          `${windowed} SELECT
+          to_char(created_at AT TIME ZONE '${zone}', 'YYYY-MM-DD') AS day,
+          coalesce(sum(subtotal) FILTER (WHERE counted), 0)::text AS gmv,
+          coalesce(sum(platform_fee + service_fee) FILTER (WHERE counted), 0)::text AS revenue,
+          count(*) FILTER (WHERE counted) AS transactions
+          FROM c GROUP BY 1`,
+          [days, 0],
+        )
+      ).rows;
+      const byDay = new Map(daily.map((d) => [d.day, d]));
+      const dayKey = (offset) =>
+        new Date(Date.now() - offset * 86400000).toLocaleDateString("en-CA", {
+          timeZone: zone,
+        });
+      const bins = Math.min(days, 12);
+      const trend = Array.from({ length: bins }, (_, i) => {
+        const start = Math.floor(((bins - 1 - i) * days) / bins);
+        const end = Math.floor(((bins - i) * days) / bins);
+        let gmv = 0n,
+          revenue = 0n,
+          transactions = 0;
+        for (let d = start; d < end; d++) {
+          const row = byDay.get(dayKey(d));
+          if (!row) continue;
+          gmv += money(row.gmv);
+          revenue += money(row.revenue);
+          transactions += int(row.transactions);
+        }
+        return {
+          date: dayKey(end - 1),
+          gmv: gmv.toString(),
+          revenue: revenue.toString(),
+          transactions,
+        };
+      });
+      const [people] = (
+        await db.raw(`SELECT
+          (SELECT count(DISTINCT u.id) FROM users u
+            JOIN user_roles ur ON ur.user_id = u.id AND ur.revoked_at IS NULL
+            JOIN roles r ON r.id = ur.role_id AND r.code = 'buyer'
+            WHERE u.status <> 'deleted') AS total_buyers,
+          (SELECT count(*) FROM stores WHERE status <> 'draft') AS total_stores,
+          (SELECT count(*) FROM stores WHERE status = 'active') AS active_store_accounts,
+          (SELECT count(*) FROM products WHERE deleted_at IS NULL AND status = 'active'
+            AND moderation_status = 'approved') AS total_products`)
+      ).rows;
+      const period = (row) => ({
+        gmv: row.gmv,
+        revenue: row.revenue,
+        transactions: int(row.transactions),
+        orders: int(row.orders),
+      });
+      const transactions = int(now.transactions);
+      result.finance = {
+        ...period(now),
+        aov: transactions
+          ? (money(now.gmv) / BigInt(transactions)).toString()
+          : null,
+        previous: period(prev),
+        active_buyers: int(now.active_buyers),
+        active_stores: int(now.active_stores),
+        total_buyers: int(people.total_buyers),
+        total_stores: int(people.total_stores),
+        active_store_accounts: int(people.active_store_accounts),
+        total_products: int(people.total_products),
+        simulated_paid_orders: int(now.simulated_orders),
+        rates: {
+          completion: rate(int(now.paid_completed), int(now.paid_orders)),
+          cancellation: rate(int(now.cancelled), int(now.orders)),
+          refund: rate(int(now.refunded_orders), int(now.paid_orders)),
+          repeat_purchase: rate(int(repeat.repeat), int(repeat.buyers)),
+          payment_success: rate(int(payment.success), int(payment.decided)),
+        },
+        trend,
+      };
+      result.unavailable.conversion_funnel = "EVENT_TRACKING_MISSING";
+      if (!int(payment.decided))
+        result.unavailable.payment_success = "NO_AUTHORITATIVE_PAYMENTS";
       return result;
     },
   };

@@ -96,6 +96,7 @@ export function accountsRepository(db) {
           "p.currency",
           "p.status",
           "p.expires_at",
+          "p.reconciliation_required",
         )
         .first();
       ensure(row, "NOT_FOUND", 404);

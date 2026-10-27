@@ -11,6 +11,8 @@ import { ensure } from '../src/domain.js';
 import { mediaService } from '../src/media.js';
 import { recoveryScenarios } from './recovery-scenarios.js';
 import { checkReadiness } from '../database/readiness.js';
+import { xenditScenarios } from './xendit-scenarios.js';
+import { adminOverviewScenarios } from './admin-overview-scenarios.js';
 const url = process.env.TEST_DATABASE_URL;
 const config = {
   secret: "a".repeat(40),
@@ -48,7 +50,9 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
     await db.migrate.latest();
     await t.test('012 upgrade, rollback, and missing-baseline repair are atomic', async () => {
       const name = '20261007121411_012_media_assets.js';
-      // Only 012 is reversed here; never roll back an application database batch.
+      const paymentMigration = '20261020000000_013_xendit_sessions.js';
+      // Reproduce the historical 001-011 repair baseline only in this disposable DB.
+      await db.migrate.down({ name: paymentMigration });
       await db.migrate.down({ name });
       const history = await db('knex_migrations').orderBy('id');
       assert.equal(history.length, 11);
@@ -74,7 +78,7 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
       await db.raw(repair);
       assert.deepEqual(await snapshot(), canonical);
       assert.deepEqual(await db('knex_migrations').orderBy('id'), history);
-      assert.deepEqual((await db.migrate.latest())[1], [name]);
+      assert.deepEqual((await db.migrate.latest())[1], [name, paymentMigration]);
       const upgraded = await snapshot();
       for (const constraint of ['fk_product_media_product', 'fk_product_media_variant',
         'fk_product_media_asset', 'uq_product_media_asset', 'chk_product_media_managed_url']) {
@@ -1232,6 +1236,8 @@ test("PostgreSQL migration and API integration", { skip: !url }, async (t) => {
       assert.notEqual(reused.data.slug, "sementara");
       assert.ok(await db("audit_logs").where({ action: "categories.delete", entity_id: temp.data.id }).first());
     });
+    await adminOverviewScenarios({ t, app, db, buyer, other, seller, admin, superAdmin, newStore });
+    await xenditScenarios({ t, db, config, buyer, other, admin, superAdmin, newStore, product, addressId: a1.data.id });
     assert.equal((await app.inject("/health")).statusCode, 200);
   } finally {
     if (app) await app.close();

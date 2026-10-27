@@ -1,4 +1,5 @@
 import { validateProvider } from "./payment.js";
+import { xenditConfig } from "./xendit.js";
 import { isIP } from "node:net";
 export function trustedProxiesFromEnv(env = process.env) {
   const values = (env.TRUSTED_PROXY_CIDRS ?? '').split(',').map(x => x.trim()).filter(Boolean);
@@ -45,13 +46,13 @@ export function configFromEnv(env = process.env) {
   const secret = env.ACCESS_TOKEN_SECRET;
   const webhook = env.PAYMENT_WEBHOOK_SECRET;
 
-  if (!secret || secret.length < 32 || !webhook || webhook.length < 32) {
+  const provider = validateProvider(env.PAYMENT_PROVIDER ?? "mock");
+  if (!secret || secret.length < 32 || (provider === "mock" && (!webhook || webhook.length < 32))) {
     throw new Error(
       "Configure ACCESS_TOKEN_SECRET and PAYMENT_WEBHOOK_SECRET with at least 32 characters",
     );
   }
 
-  const provider = validateProvider(env.PAYMENT_PROVIDER ?? "mock");
   let credentials;
   if (env.GCP_SERVICE_ACCOUNT_JSON) {
     try {
@@ -82,6 +83,7 @@ export function configFromEnv(env = process.env) {
     secret,
     webhook,
     provider,
+    ...(provider === "xendit" ? { xendit: xenditConfig(env) } : {}),
     trustedProxies: trustedProxiesFromEnv(env),
     gcs: {
       bucket: bucketFromEnv(env),

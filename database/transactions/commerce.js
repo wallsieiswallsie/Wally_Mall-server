@@ -14,7 +14,7 @@ export const number = (prefix) => `${prefix}-${randomUUID()}`;
 export async function audit(t, ctx, action, entity, id, reason, before, after) {
   await t("audit_logs").insert({
     actor_id: ctx.id,
-    actor_role: ctx.roles.includes("super_admin")
+    actor_role: !ctx.id ? "system" : ctx.roles.includes("super_admin")
       ? "super_admin"
       : ctx.roles.includes("admin")
         ? "admin"
@@ -507,6 +507,10 @@ export function commerceRepository(db, config) {
           .returning("id");
         if (!inserted) return { duplicate: true };
         const result = await reconcile(t, payment, event.status, event);
+        if (provider === "xendit")
+          await t("payments").where({ id: payment.id }).update({
+            reconciliation_required: !!result.reconciliation_required || (payment.status !== "pending" && payment.reconciliation_required),
+          });
         if (!result.reconciliation_required)
           await t("payment_events")
             .where({ id: inserted.id })

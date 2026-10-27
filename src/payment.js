@@ -1,11 +1,13 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { ensure } from "./domain.js";
+import { XenditPaymentAdapter } from "./xendit.js";
 export function validateProvider(provider) {
-  if (provider !== "mock") throw new Error("Unsupported PAYMENT_PROVIDER; only mock is implemented");
+  if (!["mock", "xendit"].includes(provider)) throw new Error("Unsupported PAYMENT_PROVIDER; use mock or xendit");
   return provider;
 }
 export function paymentAdapter(config) {
   validateProvider(config.provider);
+  if (config.provider === "xendit") return new XenditPaymentAdapter(config.xendit);
   return new MockPaymentAdapter(config.webhook);
 }
 export class PaymentAdapter {

@@ -150,4 +150,11 @@ export const transactionQuery = orderQuery.extend({
   min_amount: amount.optional(),
   max_amount: amount.optional(),
 });
+export const overviewQuery = z.strictObject({
+  days: z.coerce
+    .number()
+    .int()
+    .refine((n) => [7, 30, 90, 180, 365].includes(n))
+    .default(30),
+});
 export { z };

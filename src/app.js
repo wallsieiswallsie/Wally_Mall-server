@@ -345,6 +345,21 @@ export async function buildApp({
   route("POST", "/payments/:id/session", ["buyer"], null, (req) =>
     payments.createPayment(req.user.id, req.params.id),
   );
+  route("POST", "/payments/:id/reconcile", ["buyer"], null, async (req) => {
+    await accounts.payment(req.user.id, req.params.id);
+    await payments.reconcilePayment(req.params.id);
+    return accounts.payment(req.user.id, req.params.id);
+  });
+  route("POST", "/super-admin/payments/:id/reconcile", ["super_admin"], null, async (req) => {
+    const sessionId = req.body?.session_id;
+    ensure(sessionId === undefined || (typeof sessionId === "string" && /^ps-[\w-]+$/.test(sessionId)), "INVALID_PAYLOAD", 400);
+    return payments.reconcilePayment(req.params.id, sessionId);
+  });
+  route("POST", "/super-admin/refunds/:id/reconcile", ["super_admin"], null, async (req) => {
+    const refundId = req.body?.refund_id;
+    ensure(refundId === undefined || (typeof refundId === "string" && /^rfd-[\w-]+$/.test(refundId)), "INVALID_PAYLOAD", 400);
+    return payments.reconcileRefund(ctx(req), req.params.id, refundId);
+  });
   await app.register(async (scope) => {
     scope.removeContentTypeParser("application/json");
     scope.addContentTypeParser(
@@ -353,10 +368,15 @@ export async function buildApp({
       (req, body, done) => done(null, body),
     );
     scope.post(`${API_PREFIX}/payments/webhook/mock`, async (req) => {
+      ensure(adapter.provider === "mock", "NOT_FOUND", 404);
       const event = v.webhookEvent.parse(
         adapter.handleWebhook(req.body, req.headers["x-payment-signature"]),
       );
       return { data: await commerce.paymentEvent("mock", event) };
+    });
+    scope.post(`${API_PREFIX}/payments/webhook/xendit`, async (req) => {
+      ensure(adapter.provider === "xendit", "NOT_FOUND", 404);
+      return { data: await payments.webhook(adapter.handleWebhook(req.body, req.headers["x-callback-token"])) };
     });
   });
   function trustedMedia(url) {
@@ -500,7 +520,9 @@ export async function buildApp({
     v.z.strictObject({ reason: v.reason }),
     (req, data) => commerce.cancel(ctx(req), req.params.id, data.reason),
   );
-  route("GET", "/admin/overview", ops, null, () => management.metrics(false));
+  route("GET", "/admin/overview", ops, null, (req) =>
+    management.overview(false, v.overviewQuery.parse(req.query).days),
+  );
   for (const kind of ["applications", "stores", "products", "reports"])
     route("GET", `/admin/${kind}`, ops, null, () =>
       management.operational(kind),
@@ -550,8 +572,8 @@ export async function buildApp({
       v.transactionQuery.parse(req.query),
     ),
   );
-  route("GET", "/super-admin/overview", superOnly, null, () =>
-    management.metrics(true),
+  route("GET", "/super-admin/overview", superOnly, null, (req) =>
+    management.overview(true, v.overviewQuery.parse(req.query).days),
   );
   route("GET", "/super-admin/buyers", superOnly, null, () =>
     management.buyers(),
